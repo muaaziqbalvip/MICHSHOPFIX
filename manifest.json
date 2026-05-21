@@ -1,0 +1,20 @@
+{
+  "name": "MICH Digital Shop",
+  "short_name": "MICH Shop",
+  "description": "Pakistan's #1 Reseller Marketplace — Earn money selling digital & physical products",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050508",
+  "theme_color": "#050508",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["shopping", "business"],
+  "lang": "ur-PK",
+  "shortcuts": [
+    { "name": "Browse Products", "url": "/?page=catalogs", "description": "Browse all products" },
+    { "name": "My Earnings",    "url": "/?page=earnings", "description": "View your earnings" }
+  ]
+}

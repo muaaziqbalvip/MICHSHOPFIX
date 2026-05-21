@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>MICH Digital Shop — Pakistan's #1 Reseller Marketplace</title>
+
+  <!-- SEO Meta Tags -->
+  <meta name="description" content="Pakistan's #1 Reseller Marketplace. Sell digital & physical products. Earn money from home. Join 1200+ resellers earning daily with MICH Digital Shop." />
+  <meta name="keywords" content="reseller, digital shop, earn money online, Pakistan, JazzCash, Easypaisa, digital products, physical products, MICH shop, Eid ul Adha sale" />
+  <meta name="robots" content="index, follow" />
+  <meta name="author" content="MICH Digital Shop" />
+  <meta name="theme-color" content="#050508" />
+  <link rel="canonical" href="https://michdigitalshop.vercel.app" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="MICH Digital Shop — Pakistan's #1 Reseller Marketplace" />
+  <meta property="og:description" content="Join 1200+ resellers earning daily. Sell digital & physical products with MICH Digital Shop." />
+  <meta property="og:image" content="https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png" />
+  <meta property="og:url" content="https://michdigitalshop.vercel.app" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="MICH Digital Shop" />
+  <meta property="og:locale" content="ur_PK" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MICH Digital Shop" />
+  <meta name="twitter:description" content="Pakistan's #1 Reseller Marketplace — Earn money selling products" />
+  <meta name="twitter:image" content="https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="MICH Shop" />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+
+  <!-- App CSS -->
+  <link rel="stylesheet" href="css/styles.css" />
+
+  <!-- Structured Data (Google Rich Results) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "MICH Digital Shop",
+    "url": "https://michdigitalshop.vercel.app",
+    "description": "Pakistan's #1 Reseller Marketplace",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": "https://michdigitalshop.vercel.app?search={search_term_string}",
+      "query-input": "required name=search_term_string"
+    }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "MICH Digital Shop",
+    "url": "https://michdigitalshop.vercel.app",
+    "logo": "https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png",
+    "contactPoint": {
+      "@type": "ContactPoint",
+      "telephone": "+923062015326",
+      "contactType": "customer service",
+      "availableLanguage": ["Urdu", "English"]
+    },
+    "sameAs": ["https://wa.me/923062015326"]
+  }
+  </script>
+</head>
+<body>
+
+  <!-- ── Eid ul Adha Banner (27-29 June event) ── -->
+  <div id="eid-banner" class="eid-banner">
+    <div class="eid-banner-inner">
+      <span class="eid-anim">🐑</span>
+      <span class="eid-text">عید الاضحی مبارک — Special Sale! 27-29 May 2026</span>
+      <span class="eid-anim">🌙</span>
+      <button onclick="document.getElementById('eid-banner').style.display='none'" class="eid-close">✕</button>
+    </div>
+  </div>
+
+  <!-- ── Splash Screen ── -->
+  <div id="splash">
+    <div class="splash-inner">
+      <img src="https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png" alt="MICH" class="splash-logo" />
+      <div class="splash-title">MICH Digital Shop</div>
+      <div class="splash-tagline">Pakistan's #1 Reseller Marketplace</div>
+      <div class="splash-loader"><span></span><span></span><span></span></div>
+    </div>
+  </div>
+
+  <!-- ── Top Navbar ── -->
+  <nav id="navbar" class="navbar hidden">
+    <div class="navbar-inner">
+      <a href="#" onclick="navigate('home')" class="nav-logo">
+        <img src="https://i.ibb.co/twVpRFKh/file-0000000018807208a673a881d0f0e953.png" alt="MICH" />
+        <span class="gradient-text">MICH Shop</span>
+      </a>
+      <div class="nav-links desktop-only">
+        <a onclick="navigate('home')"     class="nav-link" data-page="home">Home</a>
+        <a onclick="navigate('catalogs')" class="nav-link" data-page="catalogs">Catalogs</a>
+        <a onclick="navigate('earnings')" class="nav-link" data-page="earnings">Earnings</a>
+        <a onclick="navigate('orders')"   class="nav-link" data-page="orders">Orders</a>
+        <a onclick="navigate('clients')"  class="nav-link" data-page="clients">Clients</a>
+        <a id="admin-link" onclick="navigate('admin')" class="nav-link admin-link hidden" data-page="admin">⚙ Admin</a>
+      </div>
+      <div class="nav-search desktop-only">
+        <input type="text" id="global-search" placeholder="Search products..." oninput="handleGlobalSearch(this.value)" />
+        <span class="search-icon">🔍</span>
+      </div>
+      <div class="nav-right">
+        <div id="nav-user-area">
+          <a onclick="navigate('auth')" class="btn-neon" id="login-btn">Login</a>
+        </div>
+        <button class="menu-btn mobile-only" onclick="toggleMobileMenu()">☰</button>
+      </div>
+    </div>
+    <!-- Mobile menu -->
+    <div id="mobile-menu" class="mobile-menu hidden">
+      <input type="text" placeholder="Search products..." oninput="handleGlobalSearch(this.value)" class="mobile-search" />
+      <a onclick="navigate('home');     closeMobileMenu()" class="mobile-nav-link">🏠 Home</a>
+      <a onclick="navigate('catalogs'); closeMobileMenu()" class="mobile-nav-link">📦 Catalogs</a>
+      <a onclick="navigate('earnings'); closeMobileMenu()" class="mobile-nav-link">💰 Earnings</a>
+      <a onclick="navigate('orders');   closeMobileMenu()" class="mobile-nav-link">🛒 Orders</a>
+      <a onclick="navigate('clients');  closeMobileMenu()" class="mobile-nav-link">👥 Clients</a>
+      <a id="admin-mobile-link" onclick="navigate('admin'); closeMobileMenu()" class="mobile-nav-link admin-link hidden">⚙ Admin</a>
+      <a onclick="logoutUser(); closeMobileMenu()" class="mobile-nav-link logout-link" id="mobile-logout" style="display:none">🚪 Logout</a>
+    </div>
+  </nav>
+
+  <!-- ── Main Content ── -->
+  <main id="app-content"></main>
+
+  <!-- ── Bottom Nav (Mobile) ── -->
+  <nav id="bottom-nav" class="bottom-nav hidden">
+    <button onclick="navigate('home')"     class="bnav-item" data-page="home">
+      <span class="bnav-icon">🏠</span><span class="bnav-label">Home</span>
+    </button>
+    <button onclick="navigate('catalogs')" class="bnav-item" data-page="catalogs">
+      <span class="bnav-icon">📦</span><span class="bnav-label">Catalogs</span>
+    </button>
+    <button onclick="navigate('earnings')" class="bnav-item" data-page="earnings">
+      <span class="bnav-icon">💰</span><span class="bnav-label">Earnings</span>
+    </button>
+    <button onclick="navigate('orders')"   class="bnav-item" data-page="orders">
+      <span class="bnav-icon">🛒</span><span class="bnav-label">Orders</span>
+    </button>
+    <button onclick="navigate('profile')"  class="bnav-item" data-page="profile">
+      <span class="bnav-icon">👤</span><span class="bnav-label">Profile</span>
+    </button>
+  </nav>
+
+  <!-- ── Toast Container ── -->
+  <div id="toast-container"></div>
+
+  <!-- ── Modal Container ── -->
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
+    <div id="modal-box" class="modal-box"></div>
+  </div>
+
+  <!-- ── Lightbox (Full Image View) ── -->
+  <div id="lightbox" class="lightbox hidden" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+    <img id="lightbox-img" src="" alt="" />
+    <div class="lightbox-nav">
+      <button onclick="lightboxPrev(event)">‹</button>
+      <span id="lightbox-counter">1 / 1</span>
+      <button onclick="lightboxNext(event)">›</button>
+    </div>
+  </div>
+
+  <!-- ── App Script ── -->
+  <script src="js/app.js"></script>
+</body>
+</html>
