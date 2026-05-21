@@ -2805,7 +2805,8 @@ async function renderShareV3(params={}) {
   // Track ref code if present
   const urlP = new URLSearchParams(window.location.search);
   const ref   = urlP.get('ref');
-
+// Line ~2806 ke baad, yahan add karo:
+if (ref) localStorage.setItem('mich_ref', ref); // ← YE LINE ADD KRO
   setContent(`
     <div style="min-height:100vh;background:var(--bg)">
       <!-- Share hero -->
