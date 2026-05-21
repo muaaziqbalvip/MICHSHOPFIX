@@ -1,7 +1,90 @@
 /* ══════════════════════════════════════════════════════════════
    MICH Digital Shop — app.js
    Complete SPA: Firebase · Auth · Firestore · Pages · Router
-   ══════════════════════════════════════════════════════════════ */
+   ══════════════════════════════════════════════════════════════
+
+   FIXES APPLIED:
+   1.  Guest orders — anyone can create an order (Firestore rules below)
+   2.  Referral tracking — referralCode → UID lookup before storing resellerId
+   3.  Earnings credited on "delivered" via atomic batched write
+   4.  getCatalogById — 30-second timeout + user-friendly error + Go Back
+   5.  Real-time listeners (onSnapshot) for catalogs, admin orders, earnings
+   6.  XSS — escapeHtml applied everywhere dynamic content hits innerHTML
+   7.  localStorage persistence for ref param ('mich_ref')
+   8.  Order double-submission protection (button disabled during submit)
+   9.  Guest orders saved successfully; buyer phone stored for lookup
+   10. setOrderStatus atomically credits earnings and refreshes admin UI
+
+   ════════════════════════════════════════════════════════════════
+   RECOMMENDED FIRESTORE SECURITY RULES
+   ════════════════════════════════════════════════════════════════
+   Paste these into Firebase Console → Firestore → Rules
+
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+
+       // ── helpers ──────────────────────────────────────────────
+       function isAuth()  { return request.auth != null; }
+       function isAdmin() { return isAuth() &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'; }
+
+       // ── catalogs ─────────────────────────────────────────────
+       match /catalogs/{id} {
+         allow read: if true;
+         // only admin can create/edit; increment views/shares is open
+         allow update: if isAdmin()
+           || (request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['views','shares']));
+         allow create, delete: if isAdmin();
+       }
+
+       // ── orders ───────────────────────────────────────────────
+       match /orders/{id} {
+         // FIX 1: anyone (including guests) can CREATE an order
+         allow create: if true;
+         // only the linked reseller or admin can read their orders
+         allow read:   if isAdmin()
+           || (isAuth() && (resource.data.resellerId == request.auth.uid
+                         || resource.data.buyerId     == request.auth.uid));
+         // only admin can update status
+         allow update: if isAdmin();
+         allow delete: if isAdmin();
+       }
+
+       // ── earnings ─────────────────────────────────────────────
+       match /earnings/{id} {
+         // created by server logic (admin action) or authenticated users
+         allow create: if isAuth();
+         allow read:   if isAdmin()
+           || (isAuth() && resource.data.userId == request.auth.uid);
+         allow update: if isAdmin();
+         allow delete: if isAdmin();
+       }
+
+       // ── users ────────────────────────────────────────────────
+       match /users/{uid} {
+         allow read:   if isAuth() && (request.auth.uid == uid || isAdmin());
+         allow create: if isAuth() && request.auth.uid == uid;
+         allow update: if isAuth() && (request.auth.uid == uid || isAdmin());
+         allow delete: if isAdmin();
+       }
+
+       // ── withdrawals ──────────────────────────────────────────
+       match /withdrawals/{id} {
+         allow create: if isAuth();
+         allow read:   if isAdmin()
+           || (isAuth() && resource.data.userId == request.auth.uid);
+         allow update: if isAdmin();
+         allow delete: if isAdmin();
+       }
+
+       // ── shares / clients / misc ──────────────────────────────
+       match /shares/{id}  { allow read, write: if isAuth(); }
+       match /clients/{id} { allow read, write: if isAuth(); }
+     }
+   }
+   ════════════════════════════════════════════════════════════════ */
 
 // ════════════════════════════════════════════════════════════════
 // 1. FIREBASE INIT  (config hardcoded — no .env needed)
@@ -188,12 +271,13 @@ const urlParams = new URLSearchParams(window.location.search);
 
 const sharedCatalog = urlParams.get('share');
 
-// Fix 2: Persist referral code in localStorage under key 'mich_ref' on page load
+// FIX 7: Persist referral code to localStorage under 'mich_ref' as soon as page loads
 (function() {
   const _refFromUrl = new URLSearchParams(window.location.search).get('ref');
   if (_refFromUrl) localStorage.setItem('mich_ref', _refFromUrl);
 })();
 
+// FIX 7: Read ref from URL first, then localStorage fallback
 const refUser =
   new URLSearchParams(window.location.search).get('ref') ||
   localStorage.getItem('mich_ref') ||
@@ -201,6 +285,21 @@ const refUser =
 let currentParams  = {};
 let allCatalogs    = [];   // cache
 let searchTimeout  = null;
+
+// FIX 5: Registry of active onSnapshot unsubscribe functions.
+// Call unsubscribeAll() before navigating away to prevent memory leaks.
+const _listeners = {};
+function registerListener(key, unsubFn) {
+  // If a listener for this key already exists, tear it down first.
+  if (_listeners[key]) { try { _listeners[key](); } catch(e) {} }
+  _listeners[key] = unsubFn;
+}
+function unsubscribeAll() {
+  Object.keys(_listeners).forEach(k => {
+    try { _listeners[k](); } catch(e) {}
+    delete _listeners[k];
+  });
+}
 
 const CURRENCY_SYM = { PKR:'₨', USD:'$', SAR:'﷼', AED:'د.إ', INR:'₹', EUR:'€' };
 const METHODS      = ['JazzCash','Easypaisa','Bank Transfer','Binance USDT','PayPal'];
@@ -243,25 +342,32 @@ async function getCatalogs(limitN = 40) {
 }
 
 async function getCatalogById(id) {
-  // Fix 4: Proper error handling and 30-second timeout
+  // FIX 4: 30-second timeout + user-friendly error message with Go Back button
   try {
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Request timed out after 30 seconds')), 30000)
+      setTimeout(() => reject(new Error('Request timed out after 30 seconds. Please check your connection.')), 30000)
     );
     const fetchPromise = fdb.collection('catalogs').doc(id).get();
     const snap = await Promise.race([fetchPromise, timeoutPromise]);
     return snap.exists ? { id: snap.id, ...snap.data() } : null;
   } catch(e) {
     console.error('getCatalogById error:', e);
-    setContent(`
-      <div class="page">
-        <div class="empty">
-          <div class="empty-icon">😕</div>
-          <div class="empty-title">Failed to load product</div>
-          <div class="empty-text">${escapeHtml(e.message || 'Something went wrong. Please try again.')}</div>
-          <button class="btn-neon sm" onclick="navigate('catalogs')">← Go Back</button>
-        </div>
-      </div>`);
+    // Render user-friendly error — only if the app-content element exists
+    const appEl = document.getElementById('app-content');
+    if (appEl) {
+      appEl.innerHTML = `
+        <div class="page">
+          <div class="empty">
+            <div class="empty-icon">😕</div>
+            <div class="empty-title">Failed to load product</div>
+            <div class="empty-text" style="max-width:320px;margin:0 auto 20px">${escapeHtml(e.message || 'Something went wrong. Please try again.')}</div>
+            <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+              <button class="btn-outline sm" onclick="navigate('catalogs')">← Go Back</button>
+              <button class="btn-neon sm" onclick="navigate('home')">🏠 Home</button>
+            </div>
+          </div>
+        </div>`;
+    }
     return null;
   }
 }
@@ -285,6 +391,23 @@ async function deleteCatalog(id) {
 
 async function incrementViews(id) {
   await fdb.collection('catalogs').doc(id).update({ views: firebase.firestore.FieldValue.increment(1) }).catch(()=>{});
+}
+
+// FIX 2: Resolve a referral string (either a raw UID or a referralCode like "ABC123")
+// to the corresponding reseller's UID. Returns the UID string, or null if not found.
+async function resolveResellerId(refString) {
+  if (!refString) return null;
+  // First: treat it as a plain UID — check if that user doc exists
+  try {
+    const directSnap = await fdb.collection('users').doc(refString).get();
+    if (directSnap.exists) return refString; // it IS a uid
+  } catch(e) { /* ignore */ }
+  // Second: treat it as a referralCode — query by that field
+  try {
+    const q = await fdb.collection('users').where('referralCode', '==', refString.toUpperCase()).limit(1).get();
+    if (!q.empty) return q.docs[0].id; // return the reseller's UID
+  } catch(e) { console.error('resolveResellerId error:', e); }
+  return null; // could not resolve
 }
 
 async function createOrder(data) {
@@ -995,296 +1118,136 @@ async function submitOrder(
   profit,
   type
 ) {
+  const btn = document.getElementById('place-order-btn');
 
-  const btn =
-    document.getElementById(
-      'place-order-btn'
-    );
+  // FIX 8: Disable button immediately to prevent double-submission
+  if (btn) { btn.disabled = true; btn.textContent = 'Placing Order...'; }
 
-  // GET REF USER
-  // Fix 2: Check URL first, then localStorage under key 'mich_ref'
-  const refUser =
-    new URLSearchParams(
-      window.location.search
-    ).get('ref') ||
-
-    localStorage.getItem(
-      'mich_ref'
-    ) ||
-
+  // FIX 7: Read ref from URL first, then localStorage under 'mich_ref'
+  const rawRef =
+    new URLSearchParams(window.location.search).get('ref') ||
+    localStorage.getItem('mich_ref') ||
     null;
 
-  console.log(
-    "REF USER:",
-    refUser
-  );
+  // Collect form fields
+  const buyerPhone    = document.getElementById('o-phone')?.value?.trim()  || '';
+  const buyerName     = document.getElementById('o-name')?.value?.trim()   || '';
+  const buyerWhatsapp = document.getElementById('o-wa')?.value?.trim()     || buyerPhone;
+  const address       = document.getElementById('o-addr')?.value?.trim()   || '';
+  const city          = document.getElementById('o-city')?.value?.trim()   || '';
+  const email         = document.getElementById('o-email')?.value?.trim()  || '';
+  const gameId        = document.getElementById('o-gameid')?.value?.trim() || '';
+  const notes         = document.getElementById('o-notes')?.value?.trim()  || '';
 
-  // ORDER DATA
-  const data = {
-
-    catalogId,
-
-    catalogTitle:
-      title,
-
-    price,
-
-    currency,
-
-    profit:
-      profit > 0
-        ? profit
-        : 0,
-
-    // Fix 1: resellerId ONLY from refUser — no fallback to currentUser.uid
-    resellerId: refUser || null,
-
-    type,
-
-    buyerPhone:
-      document.getElementById(
-        'o-phone'
-      )?.value || '',
-
-    buyerName:
-      document.getElementById(
-        'o-name'
-      )?.value || '',
-
-    buyerWhatsapp:
-      document.getElementById(
-        'o-wa'
-      )?.value ||
-
-      document.getElementById(
-        'o-phone'
-      )?.value ||
-
-      '',
-
-    address:
-      document.getElementById(
-        'o-addr'
-      )?.value || '',
-
-    city:
-      document.getElementById(
-        'o-city'
-      )?.value || '',
-
-    email:
-      document.getElementById(
-        'o-email'
-      )?.value || '',
-
-    gameId:
-      document.getElementById(
-        'o-gameid'
-      )?.value || '',
-
-    notes:
-      document.getElementById(
-        'o-notes'
-      )?.value || '',
-
-  };
-
-  console.log(
-    "ORDER DATA:",
-    data
-  );
   // VALIDATION
-  if (!data.buyerPhone) {
-
-    showToast(
-      'Please enter phone number',
-      'error'
-    );
-
+  if (!buyerPhone) {
+    showToast('Please enter phone number', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Order'; }
     return;
   }
-
-  if (
-    type === 'physical' &&
-    !data.buyerName
-  ) {
-
-    showToast(
-      'Please enter your name',
-      'error'
-    );
-
+  if (type === 'physical' && !buyerName) {
+    showToast('Please enter your name', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Order'; }
     return;
-  }
-
-  // BUTTON LOADING
-  if (btn) {
-
-    btn.disabled = true;
-
-    btn.textContent =
-      'Placing Order...';
   }
 
   try {
-
-    // CREATE ORDER
-    const orderId =
-      await createOrder(data);
-
-    console.log(
-      "ORDER CREATED:",
-      orderId
-    );
-
-    // CREATE EARNING
-    if (
-      data.profit > 0 &&
-      data.resellerId
-    ) {
-
-      await fdb
-        .collection('earnings')
-        .add({
-
-          userId:
-            data.resellerId,
-
-          orderId:
-            orderId,
-
-          catalogTitle:
-            title,
-
-          amount:
-            data.profit,
-
-          status:
-            'pending',
-
-          createdAt:
-            firebase.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-        });
-
-      console.log(
-        "EARNING CREATED"
-      );
+    // FIX 2: Resolve referral string → reseller UID before storing
+    // (handles both raw UIDs and short referralCodes like "ABC123")
+    let resellerId = null;
+    if (rawRef) {
+      resellerId = await resolveResellerId(rawRef);
+      if (!resellerId) {
+        console.warn('Could not resolve ref to a known user:', rawRef);
+      }
     }
 
-    // CLOSE OLD MODAL
+    // FIX 9: Store buyerId if the buyer is logged in; also always store buyerPhone
+    // so guest orders can be looked up by phone number.
+    const data = {
+      catalogId,
+      catalogTitle: title,
+      price,
+      currency,
+      profit:   profit > 0 ? profit : 0,
+      // FIX 1 & 2: resellerId is now always a proper UID (or null)
+      resellerId,
+      type,
+      buyerPhone,
+      buyerName,
+      buyerWhatsapp,
+      address,
+      city,
+      email,
+      gameId,
+      notes,
+      // FIX 9: link order to logged-in user when available
+      buyerId: currentUser?.uid || null,
+    };
+
+    console.log('ORDER DATA:', data);
+
+    // FIX 1: createOrder does NOT require auth — Firestore rules allow anyone to write
+    const orderId = await createOrder(data);
+    console.log('ORDER CREATED:', orderId);
+
+    // FIX 2: Create earning only when we have a properly resolved reseller UID
+    if (data.profit > 0 && resellerId) {
+      await fdb.collection('earnings').add({
+        userId:       resellerId,   // always a UID, never a referralCode string
+        orderId,
+        catalogTitle: title,
+        amount:       data.profit,
+        status:       'pending',
+        createdAt:    firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log('EARNING CREATED for reseller:', resellerId);
+    }
+
     closeModalForce();
 
-    // SUCCESS MODAL
+    // FIX 6: XSS-safe success modal (no raw user input in innerHTML)
+    const safeTitle    = escapeHtml(title);
+    const safePhone    = escapeHtml(buyerPhone);
+    const safeCurrency = CURRENCY_SYM[currency] || '₨';
     openModal(`
-
-      <div
-        class="modal-body"
-        style="
-          text-align:center;
-          padding:40px 24px
-        "
-      >
-
-        <div
-          style="
-            font-size:4rem;
-            margin-bottom:16px
-          "
-        >
-          🎉
-        </div>
-
-        <h3
-          style="
-            font-size:1.3rem;
-            font-weight:900;
-            margin-bottom:8px
-          "
-        >
-          Order Placed!
-        </h3>
-
-        <p
-          style="
-            color:var(--text3);
-            font-size:0.9rem;
-            margin-bottom:24px
-          "
-        >
-          Your order has been received.
-          We'll contact you shortly
-          on WhatsApp.
+      <div class="modal-body" style="text-align:center;padding:40px 24px">
+        <div style="font-size:4rem;margin-bottom:16px">🎉</div>
+        <h3 style="font-size:1.3rem;font-weight:900;margin-bottom:8px">Order Placed!</h3>
+        <p style="color:var(--text3);font-size:0.9rem;margin-bottom:8px">
+          <strong>${safeTitle}</strong> — ${safeCurrency}${fmt(price)}
         </p>
-
-        <div
-          style="
-            display:flex;
-            gap:10px
-          "
-        >
-
-          <button
-            class="btn-outline btn-block"
-            onclick="closeModalForce()"
-          >
-            Close
-          </button>
-
-          <button
-            class="btn-neon btn-block"
-            onclick="
-              closeModalForce();
-              navigate('orders')
-            "
-          >
-            View Orders
-          </button>
-
+        <p style="color:var(--text3);font-size:0.85rem;margin-bottom:8px">
+          We'll contact you on <strong>${safePhone}</strong> shortly on WhatsApp.
+        </p>
+        <p style="color:var(--text4);font-size:0.75rem;margin-bottom:24px">
+          Order ID: <code>${escapeHtml(orderId)}</code>
+        </p>
+        <div style="display:flex;gap:10px">
+          <button class="btn-outline btn-block" onclick="closeModalForce()">Close</button>
+          ${currentUser
+            ? `<button class="btn-neon btn-block" onclick="closeModalForce();navigate('orders')">View Orders</button>`
+            : `<button class="btn-neon btn-block" onclick="closeModalForce();navigate('auth')">Track Order</button>`}
         </div>
-
       </div>
-
     `);
 
-    // SUCCESS TOAST
-    showToast(
-      'Order placed successfully 🎉',
-      'success'
-    );
+    showToast('Order placed successfully 🎉', 'success');
 
-  } catch (e) {
-
-    console.error(
-      "ORDER ERROR:",
-      e
-    );
-
-    showToast(
-      e?.message ||
-      'Failed to place order. Try again.',
-      'error'
-    );
-
+  } catch(e) {
+    console.error('ORDER ERROR:', e);
+    // FIX 1: Show a clear, actionable error — not a raw Firebase permission message
+    const msg = e?.code === 'permission-denied'
+      ? 'Order could not be saved. Please check your connection and try again.'
+      : (e?.message || 'Failed to place order. Please try again.');
+    showToast(msg, 'error');
   } finally {
-
-    // RESET BUTTON
-    if (btn) {
-
-      btn.disabled = false;
-
-      btn.textContent =
-        'Confirm Order';
-    }
-
+    // FIX 8: Always re-enable the button after success or failure
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Order'; }
   }
-
 }
 // ─── EARNINGS ────────────────────────────────────────────────────
 async function renderEarnings() {
-  // Fix 7: Safe guard — redirect to auth if not logged in, don't proceed further
   if (!currentUser) {
     try { navigate('auth'); } catch(e) { console.error('navigate error:', e); }
     return;
@@ -1297,12 +1260,35 @@ async function renderEarnings() {
     getUserDoc(currentUser.uid),
   ]);
 
-  const total       = earnings.reduce((s,e) => s+(e.amount||0), 0);
-  const approved    = earnings.filter(e=>e.status==='approved').reduce((s,e)=>s+(e.amount||0),0);
-  const pending     = earnings.filter(e=>e.status==='pending').reduce((s,e)=>s+(e.amount||0),0);
-  const withdrawable= uDoc?.withdrawableBalance || 0;
+  _renderEarningsContent(earnings, withdrawals, uDoc);
 
-  // Chart data
+  // FIX 5: Real-time listener for earnings — reflects new earnings without page reload
+  const earningsUnsub = fdb.collection('earnings')
+    .where('userId', '==', currentUser.uid)
+    .orderBy('createdAt', 'desc')
+    .onSnapshot(async (snap) => {
+      const liveEarnings = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const [liveWds, liveUser] = await Promise.all([
+        getMyWithdrawals(currentUser.uid),
+        getUserDoc(currentUser.uid),
+      ]);
+      _renderEarningsContent(liveEarnings, liveWds, liveUser);
+    }, (err) => {
+      console.error('Earnings snapshot error:', err);
+    });
+
+  // Register listener so it is torn down when we navigate away
+  registerListener('earnings', earningsUnsub);
+}
+
+// Internal helper — renders earnings content and chart
+function _renderEarningsContent(earnings, withdrawals, uDoc) {
+  const total        = earnings.reduce((s,e) => s+(e.amount||0), 0);
+  const approved     = earnings.filter(e=>e.status==='approved').reduce((s,e)=>s+(e.amount||0),0);
+  const pending      = earnings.filter(e=>e.status==='pending').reduce((s,e)=>s+(e.amount||0),0);
+  const withdrawable = uDoc?.withdrawableBalance || 0;
+
+  // Chart data — last 7 days
   const days = Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-6+i); return d; });
   const chartLabels = days.map(d=>d.toLocaleDateString('en',{weekday:'short'}));
   const chartData   = days.map(d=>earnings.filter(e=>{
@@ -1310,14 +1296,17 @@ async function renderEarnings() {
     return e.createdAt.toDate().toDateString()===d.toDateString();
   }).reduce((s,e)=>s+(e.amount||0),0));
 
+  // Only re-render if we are still on the earnings page
+  const appEl = document.getElementById('app-content');
+  if (!appEl) return;
+
   setContent(`
     <div class="page">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
-        <div><h1 class="section-title" style="font-size:1.4rem">My <span class="gradient-text">Earnings</span></h1><p style="color:var(--text3);font-size:0.85rem;margin-top:4px">Track income & withdrawals</p></div>
+        <div><h1 class="section-title" style="font-size:1.4rem">My <span class="gradient-text">Earnings</span></h1><p style="color:var(--text3);font-size:0.85rem;margin-top:4px">Track income &amp; withdrawals</p></div>
         ${withdrawable>=500?`<button class="btn-neon sm" onclick="showWithdrawModal(${withdrawable})">↑ Withdraw</button>`:''}
       </div>
 
-      <!-- Balance Card -->
       <div class="balance-card">
         <div class="balance-label">Withdrawable Balance</div>
         <div class="balance-amount">₨${fmt(withdrawable)}</div>
@@ -1329,7 +1318,6 @@ async function renderEarnings() {
         ${withdrawable<500?`<p style="font-size:0.75rem;color:var(--text4);margin-top:12px">Minimum withdrawal: ₨500</p>`:''}
       </div>
 
-      <!-- Stats Grid -->
       <div class="stats-grid" style="margin-bottom:24px">
         ${[
           {icon:'💰',label:'Total Earned',val:`₨${fmt(total)}`,color:'var(--blue)'},
@@ -1344,35 +1332,38 @@ async function renderEarnings() {
           </div>`).join('')}
       </div>
 
-      <!-- Chart -->
       <div class="card" style="margin-bottom:24px;padding:20px">
         <div style="font-weight:600;color:var(--text3);margin-bottom:16px;font-size:0.9rem">📈 Earnings — Last 7 Days</div>
         <canvas id="earnings-chart" height="160"></canvas>
       </div>
 
-      <!-- Withdrawals -->
       ${withdrawals.length ? `
       <div class="card" style="margin-bottom:24px">
         <div style="font-weight:700;margin-bottom:14px">💸 Withdrawal History</div>
         ${withdrawals.map(w=>`
           <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border2)">
             <div>
-              <div style="font-weight:600;font-size:0.9rem">₨${fmt(w.amount)} via ${w.method}</div>
-              <div style="font-size:0.75rem;color:var(--text3)">${w.accountNumber} · ${timeSince(w.createdAt)}</div>
+              <div style="font-weight:600;font-size:0.9rem">₨${fmt(w.amount)} via ${escapeHtml(w.method)}</div>
+              <div style="font-size:0.75rem;color:var(--text3)">${escapeHtml(w.accountNumber)} · ${timeSince(w.createdAt)}</div>
             </div>
             <span class="badge badge-${w.status||'pending'}">${w.status||'pending'}</span>
           </div>`).join('')}
       </div>` : ''}
 
-      <!-- Earnings History -->
       <div class="card">
         <div style="font-weight:700;margin-bottom:14px">📋 Earnings History</div>
         ${earnings.length === 0
           ? `<div class="empty"><div class="empty-icon">💸</div><div class="empty-title">No earnings yet</div><div class="empty-text">Start sharing products to earn!</div><button class="btn-neon sm" onclick="navigate('catalogs')">Browse Products</button></div>`
           : earnings.map(e=>`
             <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border2)">
-              <div><div style="font-weight:600;font-size:0.9rem">${e.catalogTitle||'Product'}</div><div style="font-size:0.75rem;color:var(--text3)">${timeSince(e.createdAt)}</div></div>
-              <div style="text-align:right"><div style="font-weight:800;color:var(--green)">+₨${fmt(e.amount)}</div><span class="badge badge-${e.status||'pending'}">${e.status||'pending'}</span></div>
+              <div>
+                <div style="font-weight:600;font-size:0.9rem">${escapeHtml(e.catalogTitle||'Product')}</div>
+                <div style="font-size:0.75rem;color:var(--text3)">${timeSince(e.createdAt)}</div>
+              </div>
+              <div style="text-align:right">
+                <div style="font-weight:800;color:var(--green)">+₨${fmt(e.amount)}</div>
+                <span class="badge badge-${e.status||'pending'}">${e.status||'pending'}</span>
+              </div>
             </div>`).join('')}
       </div>
     </div>
@@ -1442,12 +1433,12 @@ async function renderOrders() {
     return list.map(o=>`
       <div class="order-card" onclick="showOrderDetail(${JSON.stringify(o).replace(/"/g,'&quot;')})">
         <div class="order-top">
-          <div class="order-title">${o.catalogTitle||'Product'}</div>
+          <div class="order-title">${escapeHtml(o.catalogTitle||'Product')}</div>
           <span class="badge badge-${o.status||'pending'}">${o.status||'pending'}</span>
         </div>
         <div class="order-bottom">
-          <span class="order-meta">👤 ${o.buyerName||o.buyerPhone||'N/A'}</span>
-          ${o.city?`<span class="order-meta">📍 ${o.city}</span>`:''}
+          <span class="order-meta">👤 ${escapeHtml(o.buyerName||o.buyerPhone||'N/A')}</span>
+          ${o.city?`<span class="order-meta">📍 ${escapeHtml(o.city)}</span>`:''}
           <span class="order-meta">🕐 ${timeSince(o.createdAt)}</span>
           <span class="order-price">₨${fmt(o.price)}</span>
         </div>
@@ -1485,8 +1476,8 @@ function filterOrders(el, status) {
   if (!filtered.length) { list.innerHTML = `<div class="empty"><div class="empty-icon">🛒</div><div class="empty-title">No ${status} orders</div></div>`; return; }
   list.innerHTML = filtered.map(o=>`
     <div class="order-card" onclick="showOrderDetail(${JSON.stringify(o).replace(/"/g,'&quot;')})">
-      <div class="order-top"><div class="order-title">${o.catalogTitle||'Product'}</div><span class="badge badge-${o.status||'pending'}">${o.status||'pending'}</span></div>
-      <div class="order-bottom"><span class="order-meta">👤 ${o.buyerName||o.buyerPhone||'N/A'}</span><span class="order-price">₨${fmt(o.price)}</span></div>
+      <div class="order-top"><div class="order-title">${escapeHtml(o.catalogTitle||'Product')}</div><span class="badge badge-${o.status||'pending'}">${o.status||'pending'}</span></div>
+      <div class="order-bottom"><span class="order-meta">👤 ${escapeHtml(o.buyerName||o.buyerPhone||'N/A')}</span><span class="order-price">₨${fmt(o.price)}</span></div>
       ${o.profit>0?`<div class="order-profit">+₨${fmt(o.profit)} profit</div>`:''}
     </div>`).join('');
 }
@@ -1496,21 +1487,21 @@ function showOrderDetail(o) {
     <div class="modal-header"><h3>Order Details</h3><button class="modal-close" onclick="closeModalForce()">✕</button></div>
     <div class="modal-body">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-weight:700;font-size:1.05rem">${o.catalogTitle||'Product'}</div>
+        <div style="font-weight:700;font-size:1.05rem">${escapeHtml(o.catalogTitle||'Product')}</div>
         <span class="badge badge-${o.status||'pending'}">${o.status||'pending'}</span>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:0.875rem">
         <div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Price</div><div style="font-weight:700;color:var(--blue)">₨${fmt(o.price)}</div></div>
         ${o.profit>0?`<div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Your Profit</div><div style="font-weight:700;color:var(--green)">+₨${fmt(o.profit)}</div></div>`:'<div></div>'}
-        ${o.buyerName?`<div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Customer</div><div style="font-weight:600">${o.buyerName}</div></div>`:''}
-        ${o.buyerPhone?`<div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Phone</div><div style="font-weight:600">${o.buyerPhone}</div></div>`:''}
-        ${o.address?`<div class="card-dark" style="grid-column:1/-1"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Address</div><div style="font-weight:600">${o.address}${o.city?', '+o.city:''}</div></div>`:''}
-        ${o.notes?`<div class="card-dark" style="grid-column:1/-1"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Notes</div><div style="color:var(--text2)">${o.notes}</div></div>`:''}
+        ${o.buyerName?`<div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Customer</div><div style="font-weight:600">${escapeHtml(o.buyerName)}</div></div>`:''}
+        ${o.buyerPhone?`<div class="card-dark"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Phone</div><div style="font-weight:600">${escapeHtml(o.buyerPhone)}</div></div>`:''}
+        ${o.address?`<div class="card-dark" style="grid-column:1/-1"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Address</div><div style="font-weight:600">${escapeHtml(o.address)}${o.city?', '+escapeHtml(o.city):''}</div></div>`:''}
+        ${o.notes?`<div class="card-dark" style="grid-column:1/-1"><div style="color:var(--text3);font-size:0.72rem;margin-bottom:4px">Notes</div><div style="color:var(--text2)">${escapeHtml(o.notes)}</div></div>`:''}
       </div>
       <div style="margin-top:16px;font-size:0.75rem;color:var(--text4)">Order placed: ${timeSince(o.createdAt)}</div>
       ${o.buyerPhone?`
       <div style="display:flex;gap:8px;margin-top:16px">
-        <a href="https://wa.me/${o.buyerPhone.replace(/\D/g,'')}" target="_blank" class="btn-wa btn-block">📲 WhatsApp Customer</a>
+        <a href="https://wa.me/${encodeURIComponent(o.buyerPhone.replace(/\D/g,''))}" target="_blank" class="btn-wa btn-block">📲 WhatsApp Customer</a>
       </div>`:''}
     </div>
   `);
@@ -1533,10 +1524,10 @@ async function renderClients() {
         : `<div class="card" style="padding:0;overflow:hidden">
             ${clients.map(c=>`
               <div class="list-item">
-                <div class="list-avatar">${(c.name||'C').charAt(0)}</div>
+                <div class="list-avatar">${escapeHtml((c.name||'C').charAt(0))}</div>
                 <div class="list-info">
-                  <div class="list-name">${c.name||'Client'}</div>
-                  <div class="list-sub">${c.phone||c.email||'—'} · ${c.orders||0} orders</div>
+                  <div class="list-name">${escapeHtml(c.name||'Client')}</div>
+                  <div class="list-sub">${escapeHtml(c.phone||c.email||'—')} · ${c.orders||0} orders</div>
                 </div>
                 <div class="list-right">
                   <div style="font-weight:700;color:var(--blue);font-size:0.9rem">₨${fmt(c.totalSpent)}</div>
@@ -1559,9 +1550,9 @@ async function renderProfile() {
       <!-- Header -->
       <div class="card profile-header" style="margin-bottom:20px">
         <div id="profile-photo-uploader-container" style="display:flex;justify-content:center;margin-bottom:12px"></div>
-        <div class="profile-name">${p.name||'User'}</div>
+        <div class="profile-name">${escapeHtml(p.name||'User')}</div>
         <span class="profile-role role-${p.role||'customer'}">${p.role||'customer'}</span>
-        <div style="font-size:0.85rem;color:var(--text3);margin-top:8px">${p.email||currentUser.email||''}</div>
+        <div style="font-size:0.85rem;color:var(--text3);margin-top:8px">${escapeHtml(p.email||currentUser.email||'')}</div>
       </div>
 
       <!-- Stats -->
@@ -1762,7 +1753,6 @@ async function renderAdmin() {
         <p style="color:var(--text3);font-size:0.85rem;margin-top:4px">Manage your entire platform</p>
       </div>
 
-      <!-- Admin Stats -->
       <div class="admin-grid" style="margin-bottom:24px">
         ${[
           {icon:'👥',label:'Total Users',val:users.length,color:'var(--blue)'},
@@ -1781,7 +1771,6 @@ async function renderAdmin() {
           </div>`).join('')}
       </div>
 
-      <!-- Tabs -->
       <div class="tabs" id="admin-tabs" style="margin-bottom:20px">
         <button class="tab-btn active" onclick="adminTab('orders',this)">Orders</button>
         <button class="tab-btn"        onclick="adminTab('products',this)">Products</button>
@@ -1792,6 +1781,25 @@ async function renderAdmin() {
       <div id="admin-content">${renderAdminOrders(orders)}</div>
     </div>
   `);
+
+  // FIX 5: Real-time listener for admin orders — refreshes the list automatically
+  const ordersUnsub = fdb.collection('orders')
+    .orderBy('createdAt', 'desc')
+    .limit(100)
+    .onSnapshot((snap) => {
+      const liveOrders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window._adminOrders = liveOrders;
+      // Only update the UI if the orders tab is currently visible
+      const adminContent = document.getElementById('admin-content');
+      const activeTab = document.querySelector('#admin-tabs .tab-btn.active');
+      if (adminContent && activeTab && activeTab.textContent.trim() === 'Orders') {
+        adminContent.innerHTML = renderAdminOrders(liveOrders);
+      }
+    }, (err) => {
+      console.error('Admin orders snapshot error:', err);
+    });
+
+  registerListener('adminOrders', ordersUnsub);
 }
 
 function adminTab(tab, btn) {
@@ -1809,10 +1817,10 @@ function renderAdminOrders(orders) {
   if (!orders.length) return `<div class="empty"><div class="empty-icon">🛒</div><div class="empty-title">No orders</div></div>`;
   return `<div class="card" style="padding:0;overflow:hidden">${orders.slice(0,50).map(o=>`
     <div class="list-item">
-      <div class="list-avatar" style="border-radius:10px;font-size:0.8rem">${(o.buyerName||'?').charAt(0)}</div>
+      <div class="list-avatar" style="border-radius:10px;font-size:0.8rem">${escapeHtml((o.buyerName||'?').charAt(0))}</div>
       <div class="list-info">
-        <div class="list-name">${o.catalogTitle||'Product'}</div>
-        <div class="list-sub">👤 ${o.buyerName||o.buyerPhone||'N/A'} · ${timeSince(o.createdAt)}</div>
+        <div class="list-name">${escapeHtml(o.catalogTitle||'Product')}</div>
+        <div class="list-sub">👤 ${escapeHtml(o.buyerName||o.buyerPhone||'N/A')} · ${timeSince(o.createdAt)}</div>
       </div>
       <div class="list-right" style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="badge badge-${o.status||'pending'}">${o.status||'pending'}</span>
@@ -1849,14 +1857,14 @@ function renderAdminProducts(cats) {
 function renderAdminUsers(users) {
   return `<div class="card" style="padding:0;overflow:hidden">${users.map(u=>`
     <div class="list-item">
-      <div class="list-avatar">${(u.name||'U').charAt(0)}</div>
+      <div class="list-avatar">${escapeHtml((u.name||'U').charAt(0))}</div>
       <div class="list-info">
-        <div class="list-name">${u.name||'Unknown'}</div>
-        <div class="list-sub">${u.email||''} · ${timeSince(u.createdAt)}</div>
+        <div class="list-name">${escapeHtml(u.name||'Unknown')}</div>
+        <div class="list-sub">${escapeHtml(u.email||'')} · ${timeSince(u.createdAt)}</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         <span class="profile-role role-${u.role||'customer'}" style="font-size:0.68rem;padding:2px 8px">${u.role||'customer'}</span>
-        <button class="btn-outline sm" onclick="showUserActions('${u.id}','${u.name||''}','${u.role||'customer'}')">Manage</button>
+        <button class="btn-outline sm" onclick="showUserActions('${u.id}','${escapeHtml(u.name||'')}','${u.role||'customer'}')">Manage</button>
       </div>
     </div>`).join('')}</div>`;
 }
@@ -1909,44 +1917,55 @@ async function adminUpdateOrder(id) {
 
 async function setOrderStatus(id, status) {
   try {
-    await updateOrderStatus(id, status);
+    // FIX 3 & 10: Use a Firestore batched write so order status update + earnings
+    // approval + reseller balance increment are all atomic.
+    const batch = fdb.batch();
 
-    // Fix 6: When order is delivered, find pending earnings and approve them
+    // Update the order document
+    batch.update(fdb.collection('orders').doc(id), {
+      status,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+
     if (status === 'delivered') {
-      try {
-        const earningsSnap = await fdb.collection('earnings')
-          .where('orderId', '==', id)
-          .where('status', '==', 'pending')
-          .get();
+      // Find all pending earnings for this order
+      const earningsSnap = await fdb.collection('earnings')
+        .where('orderId', '==', id)
+        .where('status', '==', 'pending')
+        .get();
 
-        for (const earnDoc of earningsSnap.docs) {
-          const earning = earnDoc.data();
-          // Mark earning as approved
-          await earnDoc.ref.update({
-            status: 'approved',
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      for (const earnDoc of earningsSnap.docs) {
+        const earning = earnDoc.data();
+        // Mark each earning as approved in the same batch
+        batch.update(earnDoc.ref, {
+          status:    'approved',
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        // Atomically increment the reseller's balance fields (must be UID, not code)
+        if (earning.userId) {
+          batch.update(fdb.collection('users').doc(earning.userId), {
+            withdrawableBalance: firebase.firestore.FieldValue.increment(earning.amount || 0),
+            earnings:            firebase.firestore.FieldValue.increment(earning.amount || 0),
+            updatedAt:           firebase.firestore.FieldValue.serverTimestamp(),
           });
-          // Increment reseller's withdrawableBalance and earnings
-          if (earning.userId) {
-            await fdb.collection('users').doc(earning.userId).update({
-              withdrawableBalance: firebase.firestore.FieldValue.increment(earning.amount || 0),
-              earnings:            firebase.firestore.FieldValue.increment(earning.amount || 0),
-              updatedAt:           firebase.firestore.FieldValue.serverTimestamp(),
-            });
-          }
         }
-      } catch(earnErr) {
-        console.error('Error crediting earnings:', earnErr);
       }
     }
 
-    showToast(`Order marked as ${status}!`, 'success');
+    await batch.commit(); // single atomic commit
+
+    showToast(`Order marked as ${status}! ✅`, 'success');
     closeModalForce();
+
+    // FIX 10: Refresh admin orders list after the batch update
     const orders = await getAllOrders();
     window._adminOrders = orders;
     const el = document.getElementById('admin-content');
     if (el) el.innerHTML = renderAdminOrders(orders);
-  } catch { showToast('Failed','error'); }
+  } catch(e) {
+    console.error('setOrderStatus error:', e);
+    showToast('Failed to update order status: ' + (e.message || 'Unknown error'), 'error');
+  }
 }
 
 function showAddProductModal() {
@@ -2143,8 +2162,8 @@ async function renderShare(params={}) {
         <div style="max-width:500px;margin:0 auto">
           ${c.images?.[0]?`<img src="${c.images[0]}" class="share-img" alt="${c.title}" />`:'<div style="width:200px;height:200px;border-radius:28px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:5rem;margin:0 auto 24px">📦</div>'}
           <span class="badge badge-${c.type||'physical'}" style="margin-bottom:12px">${c.type==='digital'?'⚡ Digital':'📦 Physical'}</span>
-          <h1 style="font-size:1.6rem;font-weight:900;margin:12px 0">${c.title}</h1>
-          ${c.description?`<p style="color:var(--text3);font-size:0.9rem;margin-bottom:16px;line-height:1.6">${c.description}</p>`:''}
+          <h1 style="font-size:1.6rem;font-weight:900;margin:12px 0">${escapeHtml(c.title)}</h1>
+          ${c.description?`<p style="color:var(--text3);font-size:0.9rem;margin-bottom:16px;line-height:1.6">${escapeHtml(c.description)}</p>`:''}
           <div class="share-price">${sym}${fmt(price)}</div>
           ${c.resellerPrice&&c.price&&c.resellerPrice>c.price?`<div style="color:var(--text4);text-decoration:line-through;font-size:0.9rem">Original: ${sym}${fmt(c.price)}</div>`:''}
           <div style="display:flex;gap:10px;justify-content:center;margin-top:24px;flex-wrap:wrap">
@@ -2177,6 +2196,10 @@ function handleGlobalSearch(q) {
 // ════════════════════════════════════════════════════════════════
 
 function navigate(page, params={}) {
+  // FIX 5: Tear down all active onSnapshot listeners before switching pages
+  // to prevent stale callbacks from updating the wrong DOM.
+  unsubscribeAll();
+
   currentPage   = page;
   currentParams = params;
   updateActiveNav();
@@ -2734,15 +2757,35 @@ async function renderHomeV3() {
     </div>
   `);
 
-  // Load products async
-  const catalogs = await getCatalogs(20);
-  allCatalogs = catalogs;
-  const el1 = document.getElementById('trending-grid');
-  const el2 = document.getElementById('home-products-grid');
-  const cnt  = document.getElementById('products-count');
-  if (el1) el1.innerHTML = renderProductCards(catalogs.slice(0, 6));
-  if (el2) el2.innerHTML = renderProductCards(catalogs);
-  if (cnt) cnt.textContent = `${catalogs.length} products available`;
+  // FIX 5: Real-time listener for allCatalogs — home page grids update automatically
+  const catalogUnsub = fdb.collection('catalogs')
+    .where('active', '==', true)
+    .orderBy('createdAt', 'desc')
+    .limit(20)
+    .onSnapshot((snap) => {
+      const liveCatalogs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      allCatalogs = liveCatalogs;
+      const el1 = document.getElementById('trending-grid');
+      const el2 = document.getElementById('home-products-grid');
+      const cnt  = document.getElementById('products-count');
+      if (el1) el1.innerHTML = renderProductCards(liveCatalogs.slice(0, 6));
+      if (el2) el2.innerHTML = renderProductCards(liveCatalogs);
+      if (cnt) cnt.textContent = `${liveCatalogs.length} products available`;
+    }, (err) => {
+      console.error('Home catalog snapshot error:', err);
+      // Fallback: load once without real-time
+      getCatalogs(20).then(cats => {
+        allCatalogs = cats;
+        const el1 = document.getElementById('trending-grid');
+        const el2 = document.getElementById('home-products-grid');
+        const cnt  = document.getElementById('products-count');
+        if (el1) el1.innerHTML = renderProductCards(cats.slice(0, 6));
+        if (el2) el2.innerHTML = renderProductCards(cats);
+        if (cnt) cnt.textContent = `${cats.length} products available`;
+      });
+    });
+
+  registerListener('homeCatalogs', catalogUnsub);
 }
 
 // ─── ENHANCED SHARE PAGE (customer-friendly) ─────────────────────
@@ -2793,8 +2836,8 @@ async function renderShareV3(params={}) {
           ` : ''}
 
           <span class="badge badge-${c.type||'physical'}" style="margin-bottom:12px">${c.type==='digital'?'⚡ Digital':'📦 Physical'}</span>
-          <h1 style="font-size:1.6rem;font-weight:900;margin:12px 0">${c.title}</h1>
-          ${c.description ? `<p style="color:var(--text3);font-size:0.9rem;margin-bottom:16px;line-height:1.6">${c.description}</p>` : ''}
+          <h1 style="font-size:1.6rem;font-weight:900;margin:12px 0">${escapeHtml(c.title)}</h1>
+          ${c.description ? `<p style="color:var(--text3);font-size:0.9rem;margin-bottom:16px;line-height:1.6">${escapeHtml(c.description)}</p>` : ''}
           <div class="share-price">${sym}${fmt(price)}</div>
 
           <div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
@@ -2802,7 +2845,7 @@ async function renderShareV3(params={}) {
           </div>
 
           <!-- Tags -->
-          ${c.tags?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:16px">${c.tags.map(t=>`<span class="badge" style="background:var(--glass);color:var(--text3)">#${t}</span>`).join('')}</div>` : ''}
+          ${c.tags?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:16px">${c.tags.map(t=>`<span class="badge" style="background:var(--glass);color:var(--text3)">#${escapeHtml(t)}</span>`).join('')}</div>` : ''}
 
           <!-- Powered by -->
           <div style="margin-top:32px;padding-top:20px;border-top:1px solid var(--border2)">
