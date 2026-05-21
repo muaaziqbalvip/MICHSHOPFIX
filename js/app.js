@@ -951,7 +951,7 @@ async function submitOrder(catalogId, title, price, currency, profit, type) {
   const data = {
     catalogId, catalogTitle:title, price, currency,
     profit: profit > 0 ? profit : 0,
-    resellerId: localStorage.getItem('refUser') || currentUser?.uid || null,
+    resellerId: currentUser?.uid || localStorage.getItem('refUser') || null,
     type,
     buyerPhone:   document.getElementById('o-phone')?.value || '',
     buyerName:    document.getElementById('o-name')?.value || '',
