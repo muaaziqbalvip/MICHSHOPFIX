@@ -945,116 +945,302 @@ async function showOrderModal(catalogId, catalog) {
   `);
 }
 
-async function submitOrder(catalogId, title, price, currency, profit, type) {
+async function submitOrder(
+  catalogId,
+  title,
+  price,
+  currency,
+  profit,
+  type
+) {
 
-  const btn = document.getElementById('place-order-btn');
+  const btn =
+    document.getElementById(
+      'place-order-btn'
+    );
 
   // GET REF USER
   const refUser =
-    new URLSearchParams(window.location.search).get('ref') ||
-    localStorage.getItem('refUser') ||
+    new URLSearchParams(
+      window.location.search
+    ).get('ref') ||
+
+    localStorage.getItem(
+      'refUser'
+    ) ||
+
     null;
 
-  console.log("REF USER:", refUser);
+  console.log(
+    "REF USER:",
+    refUser
+  );
 
+  // ORDER DATA
   const data = {
+
     catalogId,
-    catalogTitle: title,
+
+    catalogTitle:
+      title,
+
     price,
+
     currency,
 
-    profit: profit > 0 ? profit : 0,
+    profit:
+      profit > 0
+        ? profit
+        : 0,
 
-    resellerId: refUser || currentUser?.uid || null,
+    resellerId:
+      refUser ||
+      currentUser?.uid ||
+      null,
 
     type,
 
     buyerPhone:
-      document.getElementById('o-phone')?.value || '',
+      document.getElementById(
+        'o-phone'
+      )?.value || '',
 
     buyerName:
-      document.getElementById('o-name')?.value || '',
+      document.getElementById(
+        'o-name'
+      )?.value || '',
 
     buyerWhatsapp:
-      document.getElementById('o-wa')?.value ||
-      document.getElementById('o-phone')?.value ||
+      document.getElementById(
+        'o-wa'
+      )?.value ||
+
+      document.getElementById(
+        'o-phone'
+      )?.value ||
+
       '',
 
     address:
-      document.getElementById('o-addr')?.value || '',
+      document.getElementById(
+        'o-addr'
+      )?.value || '',
 
     city:
-      document.getElementById('o-city')?.value || '',
+      document.getElementById(
+        'o-city'
+      )?.value || '',
 
     email:
-      document.getElementById('o-email')?.value || '',
+      document.getElementById(
+        'o-email'
+      )?.value || '',
 
     gameId:
-      document.getElementById('o-gameid')?.value || '',
+      document.getElementById(
+        'o-gameid'
+      )?.value || '',
 
     notes:
-      document.getElementById('o-notes')?.value || '',
+      document.getElementById(
+        'o-notes'
+      )?.value || '',
+
   };
 
-  console.log("ORDER DATA:", data);
+  console.log(
+    "ORDER DATA:",
+    data
+  );
+  // VALIDATION
+  if (!data.buyerPhone) {
 
-  // YOUR ORDER SAVE CODE HERE
-  if (!data.buyerPhone) { showToast('Please enter phone number','error'); return; }
-  if (type==='physical' && !data.buyerName) { showToast('Please enter your name','error'); return; }
+    showToast(
+      'Please enter phone number',
+      'error'
+    );
 
-  if (btn) { btn.disabled = true; btn.textContent = 'Placing Order...'; }
+    return;
+  }
+
+  if (
+    type === 'physical' &&
+    !data.buyerName
+  ) {
+
+    showToast(
+      'Please enter your name',
+      'error'
+    );
+
+    return;
+  }
+
+  // BUTTON LOADING
+  if (btn) {
+
+    btn.disabled = true;
+
+    btn.textContent =
+      'Placing Order...';
+  }
+
   try {
-    const orderId = await createOrder(data);
 
-if (data.profit > 0 && data.resellerId) {
-  await fdb.collection('earnings').add({
-    userId: data.resellerId,
-    orderId: orderId,
-    catalogTitle: title,
-    amount: data.profit,
-    status: 'pending',
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-}
-showToast('Order placed successfully','success');
+    // CREATE ORDER
+    const orderId =
+      await createOrder(data);
+
+    console.log(
+      "ORDER CREATED:",
+      orderId
+    );
+
+    // CREATE EARNING
+    if (
+      data.profit > 0 &&
+      data.resellerId
+    ) {
+
+      await fdb
+        .collection('earnings')
+        .add({
+
+          userId:
+            data.resellerId,
+
+          orderId:
+            orderId,
+
+          catalogTitle:
+            title,
+
+          amount:
+            data.profit,
+
+          status:
+            'pending',
+
+          createdAt:
+            firebase.firestore
+              .FieldValue
+              .serverTimestamp(),
+
+        });
+
+      console.log(
+        "EARNING CREATED"
+      );
+    }
+
+    // CLOSE OLD MODAL
+    closeModalForce();
+
+    // SUCCESS MODAL
+    openModal(`
+
+      <div
+        class="modal-body"
+        style="
+          text-align:center;
+          padding:40px 24px
+        "
+      >
+
+        <div
+          style="
+            font-size:4rem;
+            margin-bottom:16px
+          "
+        >
+          🎉
+        </div>
+
+        <h3
+          style="
+            font-size:1.3rem;
+            font-weight:900;
+            margin-bottom:8px
+          "
+        >
+          Order Placed!
+        </h3>
+
+        <p
+          style="
+            color:var(--text3);
+            font-size:0.9rem;
+            margin-bottom:24px
+          "
+        >
+          Your order has been received.
+          We'll contact you shortly
+          on WhatsApp.
+        </p>
+
+        <div
+          style="
+            display:flex;
+            gap:10px
+          "
+        >
+
+          <button
+            class="btn-outline btn-block"
+            onclick="closeModalForce()"
+          >
+            Close
+          </button>
+
+          <button
+            class="btn-neon btn-block"
+            onclick="
+              closeModalForce();
+              navigate('orders')
+            "
+          >
+            View Orders
+          </button>
+
+        </div>
+
+      </div>
+
+    `);
+
+    // SUCCESS TOAST
+    showToast(
+      'Order placed successfully 🎉',
+      'success'
+    );
 
   } catch (e) {
 
-    console.error("ORDER ERROR:", e);
+    console.error(
+      "ORDER ERROR:",
+      e
+    );
 
     showToast(
-      e?.message || 'Order failed',
+      e?.message ||
+      'Failed to place order. Try again.',
       'error'
     );
 
   } finally {
 
+    // RESET BUTTON
     if (btn) {
+
       btn.disabled = false;
-      btn.textContent = 'Place Order';
+
+      btn.textContent =
+        'Confirm Order';
     }
 
   }
-}
-    closeModalForce();
-    openModal(`
-      <div class="modal-body" style="text-align:center;padding:40px 24px">
-        <div style="font-size:4rem;margin-bottom:16px">🎉</div>
-        <h3 style="font-size:1.3rem;font-weight:900;margin-bottom:8px">Order Placed!</h3>
-        <p style="color:var(--text3);font-size:0.9rem;margin-bottom:24px">Your order has been received. We'll contact you shortly on WhatsApp.</p>
-        <div style="display:flex;gap:10px">
-          <button class="btn-outline btn-block" onclick="closeModalForce()">Close</button>
-          <button class="btn-neon btn-block" onclick="closeModalForce();navigate('orders')">View Orders</button>
-        </div>
-      </div>
-    `);
-    showToast('Order placed! 🎉','success');
-  } catch(e) {
-    showToast('Failed to place order. Try again.','error');
-    if (btn) { btn.disabled = false; btn.textContent = 'Confirm Order'; }
-  }
-}
 
+}
 // ─── EARNINGS ────────────────────────────────────────────────────
 async function renderEarnings() {
   if (!currentUser) { navigate('auth'); return; }
