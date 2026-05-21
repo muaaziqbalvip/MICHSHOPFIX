@@ -22,6 +22,20 @@ const fdb      = firebase.firestore();
 const fstorage = firebase.storage();
 
 // ════════════════════════════════════════════════════════════════
+// 1c. SECURITY HELPER — escapeHtml (Fix 5: prevents XSS)
+// ════════════════════════════════════════════════════════════════
+
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ════════════════════════════════════════════════════════════════
 // 1b. IMGBB IMAGE UPLOAD SYSTEM
 // ════════════════════════════════════════════════════════════════
 
@@ -173,9 +187,16 @@ let currentPage    = 'home';
 const urlParams = new URLSearchParams(window.location.search);
 
 const sharedCatalog = urlParams.get('share');
+
+// Fix 2: Persist referral code in localStorage under key 'mich_ref' on page load
+(function() {
+  const _refFromUrl = new URLSearchParams(window.location.search).get('ref');
+  if (_refFromUrl) localStorage.setItem('mich_ref', _refFromUrl);
+})();
+
 const refUser =
   new URLSearchParams(window.location.search).get('ref') ||
-  localStorage.getItem('refUser') ||
+  localStorage.getItem('mich_ref') ||
   null;
 let currentParams  = {};
 let allCatalogs    = [];   // cache
@@ -222,8 +243,27 @@ async function getCatalogs(limitN = 40) {
 }
 
 async function getCatalogById(id) {
-  const snap = await fdb.collection('catalogs').doc(id).get();
-  return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  // Fix 4: Proper error handling and 30-second timeout
+  try {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Request timed out after 30 seconds')), 30000)
+    );
+    const fetchPromise = fdb.collection('catalogs').doc(id).get();
+    const snap = await Promise.race([fetchPromise, timeoutPromise]);
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  } catch(e) {
+    console.error('getCatalogById error:', e);
+    setContent(`
+      <div class="page">
+        <div class="empty">
+          <div class="empty-icon">😕</div>
+          <div class="empty-title">Failed to load product</div>
+          <div class="empty-text">${escapeHtml(e.message || 'Something went wrong. Please try again.')}</div>
+          <button class="btn-neon sm" onclick="navigate('catalogs')">← Go Back</button>
+        </div>
+      </div>`);
+    return null;
+  }
 }
 
 async function createCatalog(data) {
@@ -431,7 +471,9 @@ function timeSince(ts) {
 }
 
 function generateShareUrl(id) {
-  return `${APP_URL}/?share=${id}&ref=${currentUser?.uid || ''}`;
+  // Fix 3: Use referralCode from userProfile; fallback to short uid slice if not available
+  const ref = userProfile?.referralCode || currentUser?.uid?.slice(0, 8) || '';
+  return `${APP_URL}/?share=${id}&ref=${ref}`;
 }
 
 function shareOnWhatsApp(catalog) {
@@ -766,7 +808,7 @@ function renderProductCards(catalogs) {
     const price = c.resellerPrice || c.price || 0;
     const profit = c.resellerPrice > c.price ? c.resellerPrice - c.price : 0;
     const imgHtml = c.images?.[0]
-      ? `<img src="${c.images[0]}" alt="${c.title}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=product-img-placeholder>📦</div>'" />`
+      ? `<img src="${c.images[0]}" alt="${escapeHtml(c.title)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=product-img-placeholder>📦</div>'" />`
       : `<div class="product-img-placeholder">📦</div>`;
     return `
       <div class="product-card" onclick="navigate('catalog',{id:'${c.id}'})">
@@ -787,8 +829,8 @@ onclick="event.stopPropagation();shareCatalogById('${c.id}')">
           </div>
         </div>
         <div class="product-body">
-          ${c.category?`<div class="product-cat">📁 ${c.category}</div>`:''}
-          <div class="product-title">${c.title}</div>
+          ${c.category?`<div class="product-cat">📁 ${escapeHtml(c.category)}</div>`:''}
+          <div class="product-title">${escapeHtml(c.title)}</div>
           <div class="product-pricing">
             <div>
               ${c.resellerPrice&&c.resellerPrice>c.price?`<div class="product-old-price">${sym}${fmt(c.price)}</div>`:''}
@@ -960,13 +1002,14 @@ async function submitOrder(
     );
 
   // GET REF USER
+  // Fix 2: Check URL first, then localStorage under key 'mich_ref'
   const refUser =
     new URLSearchParams(
       window.location.search
     ).get('ref') ||
 
     localStorage.getItem(
-      'refUser'
+      'mich_ref'
     ) ||
 
     null;
@@ -993,10 +1036,8 @@ async function submitOrder(
         ? profit
         : 0,
 
-    resellerId:
-      refUser ||
-      currentUser?.uid ||
-      null,
+    // Fix 1: resellerId ONLY from refUser — no fallback to currentUser.uid
+    resellerId: refUser || null,
 
     type,
 
@@ -1243,7 +1284,11 @@ async function submitOrder(
 }
 // ─── EARNINGS ────────────────────────────────────────────────────
 async function renderEarnings() {
-  if (!currentUser) { navigate('auth'); return; }
+  // Fix 7: Safe guard — redirect to auth if not logged in, don't proceed further
+  if (!currentUser) {
+    try { navigate('auth'); } catch(e) { console.error('navigate error:', e); }
+    return;
+  }
   setContent(`<div class="page"><div style="text-align:center;padding:60px"><div style="font-size:2rem">⏳</div><p style="color:var(--text3)">Loading earnings...</p></div></div>`);
 
   const [earnings, withdrawals, uDoc] = await Promise.all([
@@ -1865,6 +1910,36 @@ async function adminUpdateOrder(id) {
 async function setOrderStatus(id, status) {
   try {
     await updateOrderStatus(id, status);
+
+    // Fix 6: When order is delivered, find pending earnings and approve them
+    if (status === 'delivered') {
+      try {
+        const earningsSnap = await fdb.collection('earnings')
+          .where('orderId', '==', id)
+          .where('status', '==', 'pending')
+          .get();
+
+        for (const earnDoc of earningsSnap.docs) {
+          const earning = earnDoc.data();
+          // Mark earning as approved
+          await earnDoc.ref.update({
+            status: 'approved',
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          });
+          // Increment reseller's withdrawableBalance and earnings
+          if (earning.userId) {
+            await fdb.collection('users').doc(earning.userId).update({
+              withdrawableBalance: firebase.firestore.FieldValue.increment(earning.amount || 0),
+              earnings:            firebase.firestore.FieldValue.increment(earning.amount || 0),
+              updatedAt:           firebase.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+        }
+      } catch(earnErr) {
+        console.error('Error crediting earnings:', earnErr);
+      }
+    }
+
     showToast(`Order marked as ${status}!`, 'success');
     closeModalForce();
     const orders = await getAllOrders();
@@ -2427,8 +2502,8 @@ async function renderCatalogDetailV3(params={}) {
 
         <!-- Info -->
         <div>
-          ${c.category ? `<div style="font-size:0.75rem;color:var(--blue);margin-bottom:8px">📁 ${c.category}</div>` : ''}
-          <h1 style="font-size:1.5rem;font-weight:900;line-height:1.3;margin-bottom:16px">${c.title}</h1>
+          ${c.category ? `<div style="font-size:0.75rem;color:var(--blue);margin-bottom:8px">📁 ${escapeHtml(c.category)}</div>` : ''}
+          <h1 style="font-size:1.5rem;font-weight:900;line-height:1.3;margin-bottom:16px">${escapeHtml(c.title)}</h1>
 
           <!-- Price card -->
           <div class="card" style="margin-bottom:16px">
@@ -2451,10 +2526,10 @@ async function renderCatalogDetailV3(params={}) {
           ${c.description ? `
           <div class="card" style="margin-bottom:16px">
             <div style="font-size:0.8rem;color:var(--text3);font-weight:600;margin-bottom:8px">Description</div>
-            <p style="font-size:0.9rem;color:var(--text2);line-height:1.6">${c.description}</p>
+            <p style="font-size:0.9rem;color:var(--text2);line-height:1.6">${escapeHtml(c.description)}</p>
           </div>` : ''}
 
-          ${c.tags?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${c.tags.map(t=>`<span class="badge" style="background:var(--glass);color:var(--text3);border:1px solid var(--border)">#${t}</span>`).join('')}</div>` : ''}
+          ${c.tags?.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${c.tags.map(t=>`<span class="badge" style="background:var(--glass);color:var(--text3);border:1px solid var(--border)">#${escapeHtml(t)}</span>`).join('')}</div>` : ''}
 
           <!-- Order Button -->
           <button class="btn-neon btn-block" style="margin-bottom:12px;font-size:1rem;padding:14px" onclick="showOrderModal('${id}')">🛒 Order Now</button>
