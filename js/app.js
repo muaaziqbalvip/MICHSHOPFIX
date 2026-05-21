@@ -173,11 +173,10 @@ let currentPage    = 'home';
 const urlParams = new URLSearchParams(window.location.search);
 
 const sharedCatalog = urlParams.get('share');
-const referralUser = urlParams.get('ref');
-
-if (referralUser) {
-  localStorage.setItem('refUser', referralUser);
-}
+const refUser =
+  new URLSearchParams(window.location.search).get('ref') ||
+  localStorage.getItem('refUser') ||
+  null;
 let currentParams  = {};
 let allCatalogs    = [];   // cache
 let searchTimeout  = null;
@@ -947,22 +946,59 @@ async function showOrderModal(catalogId, catalog) {
 }
 
 async function submitOrder(catalogId, title, price, currency, profit, type) {
-  const btn  = document.getElementById('place-order-btn');
+
+  const btn = document.getElementById('place-order-btn');
+
+  // GET REF USER
+  const refUser =
+    new URLSearchParams(window.location.search).get('ref') ||
+    localStorage.getItem('refUser') ||
+    null;
+
+  console.log("REF USER:", refUser);
+
   const data = {
-    catalogId, catalogTitle:title, price, currency,
+    catalogId,
+    catalogTitle: title,
+    price,
+    currency,
+
     profit: profit > 0 ? profit : 0,
-    resellerId: currentUser?.uid || localStorage.getItem('refUser') || null,
+
+    resellerId: refUser || currentUser?.uid || null,
+
     type,
-    buyerPhone:   document.getElementById('o-phone')?.value || '',
-    buyerName:    document.getElementById('o-name')?.value || '',
-    buyerWhatsapp:document.getElementById('o-wa')?.value || document.getElementById('o-phone')?.value || '',
-    address:      document.getElementById('o-addr')?.value || '',
-    city:         document.getElementById('o-city')?.value || '',
-    email:        document.getElementById('o-email')?.value || '',
-    gameId:       document.getElementById('o-gameid')?.value || '',
-    notes:        document.getElementById('o-notes')?.value || '',
+
+    buyerPhone:
+      document.getElementById('o-phone')?.value || '',
+
+    buyerName:
+      document.getElementById('o-name')?.value || '',
+
+    buyerWhatsapp:
+      document.getElementById('o-wa')?.value ||
+      document.getElementById('o-phone')?.value ||
+      '',
+
+    address:
+      document.getElementById('o-addr')?.value || '',
+
+    city:
+      document.getElementById('o-city')?.value || '',
+
+    email:
+      document.getElementById('o-email')?.value || '',
+
+    gameId:
+      document.getElementById('o-gameid')?.value || '',
+
+    notes:
+      document.getElementById('o-notes')?.value || '',
   };
 
+  console.log("ORDER DATA:", data);
+
+  // YOUR ORDER SAVE CODE HERE
   if (!data.buyerPhone) { showToast('Please enter phone number','error'); return; }
   if (type==='physical' && !data.buyerName) { showToast('Please enter your name','error'); return; }
 
@@ -979,6 +1015,26 @@ if (data.profit > 0 && data.resellerId) {
     status: 'pending',
     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
   });
+}
+showToast('Order placed successfully','success');
+
+  } catch (e) {
+
+    console.error("ORDER ERROR:", e);
+
+    showToast(
+      e?.message || 'Order failed',
+      'error'
+    );
+
+  } finally {
+
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Place Order';
+    }
+
+  }
 }
     closeModalForce();
     openModal(`
