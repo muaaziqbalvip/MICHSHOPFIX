@@ -271,17 +271,38 @@ const urlParams = new URLSearchParams(window.location.search);
 
 const sharedCatalog = urlParams.get('share');
 
-// FIX 7: Persist referral code to localStorage under 'mich_ref' as soon as page loads
+// REFERRAL FIX: Save ref from URL query OR hash params to localStorage on every page load
 (function() {
-  const _refFromUrl = new URLSearchParams(window.location.search).get('ref');
-  if (_refFromUrl) localStorage.setItem('mich_ref', _refFromUrl);
+  // Support both ?ref=XXX and #ref=XXX formats
+  const _qRef = new URLSearchParams(window.location.search).get('ref');
+  const _hRef = (function(){
+    try {
+      const h = window.location.hash.replace(/^#\/?/, '');
+      return new URLSearchParams(h).get('ref');
+    } catch(e){ return null; }
+  })();
+  const _anyRef = _qRef || _hRef;
+  if (_anyRef) localStorage.setItem('mich_ref', _anyRef);
 })();
 
-// FIX 7: Read ref from URL first, then localStorage fallback
-const refUser =
-  new URLSearchParams(window.location.search).get('ref') ||
-  localStorage.getItem('mich_ref') ||
-  null;
+// REFERRAL FIX: Always read ref fresh — never cache in a const
+// This function is called at order time to get the most current ref
+function getActiveRef() {
+  try {
+    // 1. Hash params (used by navigate with hash routing)
+    const hashStr = window.location.hash.replace(/^#\/?/, '');
+    const hashRef = new URLSearchParams(hashStr).get('ref');
+    if (hashRef) return hashRef;
+  } catch(e){}
+  // 2. Query string (original share links)
+  const qRef = new URLSearchParams(window.location.search).get('ref');
+  if (qRef) return qRef;
+  // 3. localStorage (persisted when buyer first clicked link)
+  return localStorage.getItem('mich_ref') || null;
+}
+
+// Keep refUser for any legacy reads (points to function)
+const refUser = getActiveRef();
 let currentParams  = {};
 let allCatalogs    = [];   // cache
 let searchTimeout  = null;
@@ -1123,11 +1144,8 @@ async function submitOrder(
   // FIX 8: Disable button immediately to prevent double-submission
   if (btn) { btn.disabled = true; btn.textContent = 'Placing Order...'; }
 
-  // FIX 7: Read ref from URL first, then localStorage under 'mich_ref'
-  const rawRef =
-    new URLSearchParams(window.location.search).get('ref') ||
-    localStorage.getItem('mich_ref') ||
-    null;
+  // REFERRAL FIX: Always use getActiveRef() — reads hash, query, or localStorage
+  const rawRef = getActiveRef();
 
   // Collect form fields
   const buyerPhone    = document.getElementById('o-phone')?.value?.trim()  || '';
@@ -2196,12 +2214,27 @@ function handleGlobalSearch(q) {
 // ════════════════════════════════════════════════════════════════
 
 function navigate(page, params={}) {
-  // FIX 5: Tear down all active onSnapshot listeners before switching pages
-  // to prevent stale callbacks from updating the wrong DOM.
+  // REFERRAL FIX: Preserve ref in hash so it survives SPA navigation
+  const currentRef = getActiveRef();
+
+  // Tear down all active onSnapshot listeners before switching pages
   unsubscribeAll();
 
   currentPage   = page;
   currentParams = params;
+
+  // Build hash: #page?key=val&ref=XXX
+  const hashParts = [];
+  if (params.id)       hashParts.push('id='       + encodeURIComponent(params.id));
+  if (params.order)    hashParts.push('order=1');
+  if (params.category) hashParts.push('category=' + encodeURIComponent(params.category));
+  if (currentRef)      hashParts.push('ref='      + encodeURIComponent(currentRef));
+
+  const newHash = '#' + page + (hashParts.length ? '?' + hashParts.join('&') : '');
+  if (window.location.hash !== newHash) {
+    history.pushState({ page, params }, '', newHash);
+  }
+
   updateActiveNav();
 
   switch (page) {
@@ -2219,6 +2252,34 @@ function navigate(page, params={}) {
   }
   closeMobileMenu();
 }
+
+// REFERRAL FIX: Handle browser back/forward buttons properly
+window.addEventListener('popstate', function(e) {
+  if (!e.state || !e.state.page) return;
+  // Re-save ref from hash on back/forward
+  try {
+    const hashStr = window.location.hash.replace(/^#[^?]*\??/, '');
+    const hashRef = new URLSearchParams(hashStr).get('ref');
+    if (hashRef) localStorage.setItem('mich_ref', hashRef);
+  } catch(err) {}
+  unsubscribeAll();
+  currentPage   = e.state.page;
+  currentParams = e.state.params || {};
+  updateActiveNav();
+  switch (e.state.page) {
+    case 'home':     renderHomeV3();                             break;
+    case 'auth':     renderAuth();                               break;
+    case 'catalogs': renderCatalogs(e.state.params || {});      break;
+    case 'catalog':  renderCatalogDetailV3(e.state.params||{}); break;
+    case 'earnings': renderEarnings();                           break;
+    case 'orders':   renderOrders();                             break;
+    case 'clients':  renderClients();                            break;
+    case 'profile':  renderProfile();                            break;
+    case 'admin':    renderAdmin();                              break;
+    case 'share':    renderShareV3(e.state.params || {});        break;
+    default:         renderHomeV3();
+  }
+});
 
 // ════════════════════════════════════════════════════════════════
 // 8. PWA SERVICE WORKER
@@ -2469,6 +2530,10 @@ async function generateSitemap() {
 // ─── ENHANCED CATALOG DETAIL with Lightbox & Better Share ───────
 async function renderCatalogDetailV3(params={}) {
   const { id, order } = params;
+  // REFERRAL FIX: Always save ref when entering a product page
+  const _detailRef = getActiveRef();
+  if (_detailRef) localStorage.setItem('mich_ref', _detailRef);
+
   setContent(`<div class="page"><div style="text-align:center;padding:60px 0"><div style="font-size:3rem">⏳</div><p style="color:var(--text3);margin-top:12px">Loading product...</p></div></div>`);
 
   const c = await getCatalogById(id);
@@ -2802,11 +2867,9 @@ async function renderShareV3(params={}) {
   const price  = c.resellerPrice || c.price || 0;
   const images = c.images || [];
 
-  // Track ref code if present
-  const urlP = new URLSearchParams(window.location.search);
-  const ref   = urlP.get('ref');
-// Line ~2806 ke baad, yahan add karo:
-if (ref) localStorage.setItem('mich_ref', ref); // ← YE LINE ADD KRO
+  // REFERRAL FIX: Save ref from hash OR query string to localStorage (share page)
+  const _shareRef = getActiveRef();
+  if (_shareRef) localStorage.setItem('mich_ref', _shareRef);
   setContent(`
     <div style="min-height:100vh;background:var(--bg)">
       <!-- Share hero -->
@@ -2864,10 +2927,19 @@ if (ref) localStorage.setItem('mich_ref', ref); // ← YE LINE ADD KRO
 // ════════════════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Check for share param in URL
-  const urlParams = new URLSearchParams(window.location.search);
-  const shareId   = urlParams.get('share');
-  const refCode   = urlParams.get('ref');
+  // REFERRAL FIX: Parse ALL possible sources for ref and share on page load
+  const urlParams  = new URLSearchParams(window.location.search);
+  const shareId    = urlParams.get('share');
+
+  // Parse hash to support hash-based routing
+  const rawHash    = window.location.hash.replace(/^#/, ''); // e.g. "catalog?id=XYZ&ref=ABC"
+  const hashPage   = rawHash.split('?')[0];                  // e.g. "catalog"
+  const hashQuery  = rawHash.includes('?') ? rawHash.split('?')[1] : '';
+  const hashParams = new URLSearchParams(hashQuery);
+
+  // Save ref from any source to localStorage
+  const anyRef = urlParams.get('ref') || hashParams.get('ref');
+  if (anyRef) localStorage.setItem('mich_ref', anyRef);
 
   // Auth state listener
   fauth.onAuthStateChanged(async (firebaseUser) => {
@@ -2893,10 +2965,39 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('splash')?.classList.add('hide');
     }, 800);
 
-    // Route
+    // REFERRAL FIX: Smart routing — check query string, hash, then default
     if (shareId) {
+      // Old-style share link: ?share=ID&ref=CODE
       navigate('share', { id: shareId });
-    } else if (currentPage === 'home' || !currentPage) {
+    } else if (hashPage && hashPage !== 'home' && hashPage !== '') {
+      // Hash-based navigation: #catalog?id=XYZ or #share?id=XYZ
+      const hashId       = hashParams.get('id')       || undefined;
+      const hashOrder    = hashParams.get('order')    === '1';
+      const hashCategory = hashParams.get('category') || undefined;
+      const hashRef      = hashParams.get('ref');
+      if (hashRef) localStorage.setItem('mich_ref', hashRef);
+
+      const pageParams = {};
+      if (hashId)       pageParams.id       = hashId;
+      if (hashOrder)    pageParams.order    = true;
+      if (hashCategory) pageParams.category = hashCategory;
+
+      currentPage   = hashPage;
+      currentParams = pageParams;
+      switch (hashPage) {
+        case 'home':     renderHomeV3();                  break;
+        case 'auth':     renderAuth();                    break;
+        case 'catalogs': renderCatalogs(pageParams);      break;
+        case 'catalog':  renderCatalogDetailV3(pageParams); break;
+        case 'earnings': renderEarnings();                break;
+        case 'orders':   renderOrders();                  break;
+        case 'clients':  renderClients();                 break;
+        case 'profile':  renderProfile();                 break;
+        case 'admin':    renderAdmin();                   break;
+        case 'share':    renderShareV3(pageParams);       break;
+        default:         renderHomeV3();
+      }
+    } else {
       navigate('home');
     }
   });
