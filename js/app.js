@@ -982,7 +982,7 @@ onclick="event.stopPropagation();shareCatalogById('${c.id}')">
             </div>
             ${profit>0?`<div class="product-profit">+${sym}${fmt(profit)} profit</div>`:''}
           </div>
-          <button class="product-order-btn" onclick="event.stopPropagation();navigate('catalog',{id:'${c.id}',order:true})">🛒 Order Now</button>
+          <button class="product-order-btn" onclick="event.stopPropagation();${c.orderLink ? `window.open('${c.orderLink.replace(/'/g,"\\'")}','_blank')` : `navigate('catalog',{id:'${c.id}',order:true})`}">🛒 Order Now</button>
         </div>
       </div>`;
   }).join('');
@@ -1065,7 +1065,7 @@ onclick="openLightbox(0)" />`
 
           <!-- Actions -->
           <div style="display:flex;gap:10px;margin-bottom:12px">
-            <button class="btn-neon" style="flex:1;justify-content:center" onclick="showOrderModal('${id}')">🛒 Order Now</button>
+            <button class="btn-neon" style="flex:1;justify-content:center" onclick="${c.orderLink ? `window.open('${c.orderLink.replace(/'/g,"\\'")}','_blank')` : `showOrderModal('${id}')`}">🛒 Order Now</button>
             <button class="btn-wa" onclick="shareOnWhatsApp(${JSON.stringify(c).replace(/"/g,'&quot;')})">📲</button>
           </div>
           <div style="display:flex;gap:8px">
@@ -1092,6 +1092,13 @@ function switchImg(src, el) {
 async function showOrderModal(catalogId, catalog) {
   if (!catalog) catalog = await getCatalogById(catalogId);
   if (!catalog) return;
+
+  // ── ORDER LINK: agar admin ne external link diya hua hai to seedha wahan bhejo ──
+  if (catalog.orderLink && catalog.orderLink.trim()) {
+    window.open(catalog.orderLink.trim(), '_blank');
+    return;
+  }
+
   const sym   = CURRENCY_SYM[catalog.currency] || '₨';
   const price = catalog.resellerPrice || catalog.price || 0;
   const isDigital = catalog.type === 'digital';
@@ -2009,6 +2016,11 @@ function showAddProductModal() {
         <div id="np-imgbb-container"></div>
       </div>
       <div class="form-group"><label class="form-label">Tags (comma separated)</label><input class="input" id="np-tags" placeholder="sale, trending, new" /></div>
+      <div class="form-group">
+        <label class="form-label">🔗 Order Link <span style="color:var(--text4);font-weight:400">(Optional — agar product available nahi, client yahan jayega)</span></label>
+        <input class="input" id="np-orderlink" placeholder="https://wa.me/923001234567 ya koi bhi link" />
+        <div style="font-size:0.72rem;color:var(--text4);margin-top:4px">⚠️ Agar ye link diya gaya to "Order Now" button direct is link pe bhejega</div>
+      </div>
       <button class="btn-neon btn-block" id="add-prod-btn" onclick="submitAddProduct()">Add Product</button>
     </div>
   `);
@@ -2026,6 +2038,7 @@ async function submitAddProduct() {
   const images = window._npImages || [];
   const tagsRaw  = document.getElementById('np-tags')?.value || '';
   const tags = tagsRaw.split(',').map(s=>s.trim()).filter(Boolean);
+  const orderLink = document.getElementById('np-orderlink')?.value?.trim() || '';
   try {
     await createCatalog({
       title,
@@ -2037,6 +2050,7 @@ async function submitAddProduct() {
       type: document.getElementById('np-type')?.value || 'physical',
       category: document.getElementById('np-cat')?.value || '',
       images, tags,
+      orderLink: orderLink || '',
       createdBy: currentUser.uid,
     });
     closeModalForce();
@@ -2087,6 +2101,11 @@ async function showEditProductModal(id) {
         <div id="ep-imgbb-container"></div>
       </div>
       <div class="form-group"><label class="form-label">Tags (comma separated)</label><input class="input" id="ep-tags" value="${(c.tags||[]).join(', ')}" /></div>
+      <div class="form-group">
+        <label class="form-label">🔗 Order Link <span style="color:var(--text4);font-weight:400">(Optional — agar product available nahi, client yahan jayega)</span></label>
+        <input class="input" id="ep-orderlink" value="${escapeHtml(c.orderLink||'')}" placeholder="https://wa.me/923001234567 ya koi bhi link" />
+        <div style="font-size:0.72rem;color:var(--text4);margin-top:4px">⚠️ Agar ye link diya gaya to "Order Now" button direct is link pe bhejega</div>
+      </div>
       <button class="btn-neon btn-block" id="edit-prod-btn" onclick="submitEditProduct('${id}')">Save Changes</button>
     </div>
   `);
@@ -2114,6 +2133,7 @@ async function submitEditProduct(id) {
       category: document.getElementById('ep-cat')?.value || '',
       images: window._epImages || [],
       tags,
+      orderLink: document.getElementById('ep-orderlink')?.value?.trim() || '',
     });
     closeModalForce();
     showToast('Product updated! ✅','success');
@@ -2905,7 +2925,7 @@ async function renderShareV3(params={}) {
           <div class="share-price">${sym}${fmt(price)}</div>
 
           <div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-            <button class="btn-neon lg" onclick="showOrderModal('${id}')">🛒 Order Now</button>
+            <button class="btn-neon lg" onclick="${c.orderLink ? `window.open('${c.orderLink.replace(/'/g,"\\'")}','_blank')` : `showOrderModal('${id}')`}">🛒 Order Now</button>
           </div>
 
           <!-- Tags -->
